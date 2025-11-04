@@ -4,6 +4,7 @@ import com.sun.source.tree.BinaryTree;
 import com.sun.source.tree.CompoundAssignmentTree;
 import com.sun.source.tree.ExpressionTree;
 import com.sun.source.tree.LiteralTree;
+import com.sun.source.tree.MethodInvocationTree;
 import com.sun.source.tree.Tree;
 import com.sun.source.tree.TypeCastTree;
 import com.sun.source.tree.VariableTree;
@@ -13,9 +14,11 @@ import java.util.List;
 import javax.annotation.processing.ProcessingEnvironment;
 import javax.lang.model.element.AnnotationMirror;
 import javax.lang.model.element.Element;
+import javax.lang.model.element.ExecutableElement;
 import javax.lang.model.type.TypeKind;
 import javax.lang.model.type.TypeMirror;
 import org.checkerframework.checker.nullness.qual.Nullable;
+import org.checkerframework.checker.signedness.qual.BitPattern;
 import org.checkerframework.checker.signedness.qual.PolySigned;
 import org.checkerframework.checker.signedness.qual.Signed;
 import org.checkerframework.checker.signedness.qual.SignedPositive;
@@ -76,6 +79,10 @@ public class SignednessAnnotatedTypeFactory extends BaseAnnotatedTypeFactory {
   protected final AnnotationMirror POLY_SIGNED =
       AnnotationBuilder.fromClass(elements, PolySigned.class);
 
+  /** The @BitPattern annotation. */
+  protected final AnnotationMirror BITPATTERN =
+      AnnotationBuilder.fromClass(elements, BitPattern.class);
+
   /** The @NonNegative annotation of the Index Checker, as represented by the Value Checker. */
   private final AnnotationMirror INT_RANGE_FROM_NON_NEGATIVE =
       AnnotationBuilder.fromClass(elements, IntRangeFromNonNegative.class);
@@ -135,6 +142,23 @@ public class SignednessAnnotatedTypeFactory extends BaseAnnotatedTypeFactory {
       }
     } else if (!computingAnnotatedTypeMirrorOfLHS) {
       addSignedPositiveAnnotation(tree, type);
+    }
+
+    // Annotate returns of known bit-pattern producing methods as @BitPattern
+    if (tree instanceof MethodInvocationTree) {
+      MethodInvocationTree mit = (MethodInvocationTree) tree;
+      ExecutableElement elt = TreeUtils.elementFromUse(mit);
+      if (elt != null) {
+        javax.lang.model.element.Element owner = elt.getEnclosingElement();
+        String ownerName = owner.toString();
+        String mname = elt.getSimpleName().toString();
+        if (("java.lang.Double".equals(ownerName)
+                && ("doubleToLongBits".equals(mname) || "doubleToRawLongBits".equals(mname)))
+            || ("java.lang.Float".equals(ownerName)
+                && ("floatToIntBits".equals(mname) || "floatToRawIntBits".equals(mname)))) {
+          type.replaceAnnotation(BITPATTERN);
+        }
+      }
     }
 
     super.addComputedTypeAnnotations(tree, type, iUseFlow);
@@ -306,6 +330,15 @@ public class SignednessAnnotatedTypeFactory extends BaseAnnotatedTypeFactory {
             type.replaceAnnotations(lht.getPrimaryAnnotations());
           }
           break;
+        case AND:
+        case OR:
+        case XOR:
+          // For bitwise operations, preserve left operand type only if it's @BitPattern
+          AnnotatedTypeMirror lht = getAnnotatedType(tree.getLeftOperand());
+          if (lht.hasPrimaryAnnotation(BitPattern.class)) {
+            type.replaceAnnotations(lht.getPrimaryAnnotations());
+          }
+          break;
         default:
           // Do nothing
       }
@@ -317,6 +350,26 @@ public class SignednessAnnotatedTypeFactory extends BaseAnnotatedTypeFactory {
       if (TreeUtils.isStringCompoundConcatenation(tree)) {
         if (TypesUtils.isCharOrCharacter(TreeUtils.typeOf(tree.getExpression()))) {
           type.replaceAnnotation(SIGNED);
+        }
+      } else {
+        // For bitwise compound assignments, preserve the LHS annotations only if LHS is @BitPattern
+        switch (tree.getKind()) {
+          case AND_ASSIGNMENT:
+          case OR_ASSIGNMENT:
+          case XOR_ASSIGNMENT:
+            AnnotatedTypeMirror lht = getAnnotatedType(tree.getVariable());
+            if (lht.hasPrimaryAnnotation(BitPattern.class)) {
+              type.replaceAnnotations(lht.getPrimaryAnnotations());
+            }
+            break;
+          case LEFT_SHIFT_ASSIGNMENT:
+          case RIGHT_SHIFT_ASSIGNMENT:
+          case UNSIGNED_RIGHT_SHIFT_ASSIGNMENT:
+            AnnotatedTypeMirror lhtShift = getAnnotatedType(tree.getVariable());
+            type.replaceAnnotations(lhtShift.getPrimaryAnnotations());
+            break;
+          default:
+            // nothing
         }
       }
       return null;

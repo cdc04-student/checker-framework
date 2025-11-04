@@ -9,6 +9,7 @@ import com.sun.source.tree.Tree;
 import javax.lang.model.element.ExecutableElement;
 import org.checkerframework.checker.interning.InterningVisitor;
 import org.checkerframework.checker.interning.qual.EqualsMethod;
+import org.checkerframework.checker.signedness.qual.BitPattern;
 import org.checkerframework.checker.signedness.qual.PolySigned;
 import org.checkerframework.checker.signedness.qual.Signed;
 import org.checkerframework.checker.signedness.qual.Unsigned;
@@ -78,6 +79,36 @@ public class SignednessVisitor extends BaseTypeVisitor<SignednessAnnotatedTypeFa
     AnnotatedTypeMirror rightOpType = argTypes.second;
 
     Tree.Kind kind = tree.getKind();
+
+    // If either operand is a BitPattern, arithmetic operators are forbidden.
+    if (leftOpType.hasPrimaryAnnotation(BitPattern.class)
+        || rightOpType.hasPrimaryAnnotation(BitPattern.class)) {
+      switch (kind) {
+        case PLUS:
+          if (TreeUtils.isStringConcatenation(tree)) {
+            // String concatenation with a bitpattern is not allowed.
+            checker.reportError(tree, "bitpattern.concat");
+            return super.visitBinary(tree, p);
+          }
+        // fall through to report arithmetic error
+        case MINUS:
+        case MULTIPLY:
+        case DIVIDE:
+        case REMAINDER:
+          checker.reportError(tree, "operation.bitpattern", kind, leftOpType, rightOpType);
+          return super.visitBinary(tree, p);
+        case AND:
+        case OR:
+        case XOR:
+        case LEFT_SHIFT:
+        case RIGHT_SHIFT:
+        case UNSIGNED_RIGHT_SHIFT:
+          // Bitwise ops and shifts are allowed on @BitPattern
+          break;
+        default:
+          // Other operations - let existing logic handle them
+      }
+    }
 
     switch (kind) {
       case DIVIDE:
@@ -209,7 +240,52 @@ public class SignednessVisitor extends BaseTypeVisitor<SignednessAnnotatedTypeFa
       return null;
     }
 
+    // Allow passing bit-pattern values to the JDK conversions back to floating point
+    // (e.g., Double.longBitsToDouble(long), Float.intBitsToFloat(int)).  These methods
+    // are intended to take raw bit patterns, so skip signedness argument checks for them.
+    if (methElt != null) {
+      javax.lang.model.element.Element owner = methElt.getEnclosingElement();
+      String ownerName = owner.toString();
+      String name = methElt.getSimpleName().toString();
+      if (("java.lang.Double".equals(ownerName) && "longBitsToDouble".equals(name))
+          || ("java.lang.Float".equals(ownerName) && "intBitsToFloat".equals(name))) {
+        return null;
+      }
+    }
+
     return super.visitMethodInvocation(tree, p);
+  }
+
+  @Override
+  public Void visitUnary(com.sun.source.tree.UnaryTree node, Void p) {
+    com.sun.source.tree.ExpressionTree expr = node.getExpression();
+    AnnotatedTypeMirror exprType = atypeFactory.getAnnotatedType(expr);
+    boolean isBitPatternError = false;
+
+    switch (node.getKind()) {
+      case PREFIX_INCREMENT:
+      case PREFIX_DECREMENT:
+      case POSTFIX_INCREMENT:
+      case POSTFIX_DECREMENT:
+      case UNARY_PLUS:
+      case UNARY_MINUS:
+        if (exprType.hasPrimaryAnnotation(BitPattern.class)) {
+          checker.reportError(node, "unary.bitpattern");
+          isBitPatternError = true;
+        }
+        break;
+      case BITWISE_COMPLEMENT:
+        // Bitwise complement (~) is allowed on @BitPattern
+        break;
+      default:
+        // nothing
+    }
+
+    // Don't call super if we reported a BitPattern error to avoid duplicate generic errors
+    if (isBitPatternError) {
+      return null;
+    }
+    return super.visitUnary(node, p);
   }
 
   /**
@@ -252,6 +328,28 @@ public class SignednessVisitor extends BaseTypeVisitor<SignednessAnnotatedTypeFa
     AnnotatedTypeMirror exprType = argTypes.second;
 
     Tree.Kind kind = tree.getKind();
+
+    // For @BitPattern, forbid arithmetic compound assignments.
+    if (varType.hasPrimaryAnnotation(BitPattern.class)
+        || exprType.hasPrimaryAnnotation(BitPattern.class)) {
+      switch (kind) {
+        case PLUS_ASSIGNMENT:
+        case MINUS_ASSIGNMENT:
+        case MULTIPLY_ASSIGNMENT:
+        case DIVIDE_ASSIGNMENT:
+        case REMAINDER_ASSIGNMENT:
+          checker.reportError(
+              tree,
+              "compound.assignment.bitpattern",
+              kindWithoutAssignment(kind),
+              varType,
+              exprType);
+          // Don't call super to avoid duplicate generic errors
+          return null;
+        default:
+          // allow bitwise compound assignments and shifts
+      }
+    }
 
     switch (kind) {
       case DIVIDE_ASSIGNMENT:

@@ -1,0 +1,6 @@
+Failures:
+
+- I faced some issues getting the AI to identify which tests it wasn't passing. After its first iteration of trying
+to fix the code, it still failed the signedness tests, but it for some reason thought it was failing a different set of tests.
+So when it tried changing the code again, the signedness still didn't pass because it was changing code not relevant to passing
+the test.

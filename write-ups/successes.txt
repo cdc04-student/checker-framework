@@ -1,0 +1,6 @@
+Successes:
+
+- Once I told the AI which piece of the code was responsible for not passing the tests, it was able to 
+identify and fix the issue pretty quickly. It did not really need any clarification beyond anything in the issue description.
+
+- The AI was able to identify which test we needed to enable quickly.
